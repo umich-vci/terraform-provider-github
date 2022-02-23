@@ -78,7 +78,31 @@ func Provider() terraform.ResourceProvider {
 						},
 					},
 				},
-				ConflictsWith: []string{"token"},
+				ConflictsWith: []string{"token", "oauth_app"},
+			},
+			"oauth_app": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				MaxItems:    1,
+				Description: descriptions["oauth_app"],
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"client_id": {
+							Type:        schema.TypeString,
+							Required:    true,
+							DefaultFunc: schema.EnvDefaultFunc("GITHUB_OAUTH_APP_CLIENT_ID", nil),
+							Description: descriptions["oauth_app.client_id"],
+						},
+						"client_secret": {
+							Type:        schema.TypeString,
+							Required:    true,
+							Sensitive:   true,
+							DefaultFunc: schema.EnvDefaultFunc("GITHUB_OAUTH_APP_CLIENT_SECRET", nil),
+							Description: descriptions["oauth_app.client_secret"],
+						},
+					},
+				},
+				ConflictsWith: []string{"token", "app_auth"},
 			},
 		},
 
@@ -152,8 +176,8 @@ var descriptions map[string]string
 
 func init() {
 	descriptions = map[string]string{
-		"token": "The OAuth token used to connect to GitHub. Anonymous mode is enabled if both `token` and " +
-			"`app_auth` are not set.",
+		"token": "The OAuth token used to connect to GitHub. Anonymous mode is enabled if " +
+			"`token`, `app_auth`, and `oauth_app` are not set.",
 
 		"base_url": "The GitHub Base API URL",
 
@@ -166,10 +190,16 @@ func init() {
 			"Use this field instead of `owner` when managing organization accounts.",
 
 		"app_auth": "The GitHub App credentials used to connect to GitHub. Conflicts with " +
-			"`token`. Anonymous mode is enabled if both `token` and `app_auth` are not set.",
+			"`token` and `oauth_app`. Anonymous mode is enabled if `token`, `app_auth`, and " +
+			"`oauth_app` are not set.",
 		"app_auth.id":              "The GitHub App ID.",
 		"app_auth.installation_id": "The GitHub App installation instance ID.",
 		"app_auth.pem_file":        "The GitHub App PEM file contents.",
+		"oauth_app": "The GitHub OAuth App credentials used to connect to GitHub. Conflicts with " +
+			"`token` and `app_auth`. Anonymous mode is enabled if `token`, `app_auth`, and " +
+			"`oauth_app` are not set.",
+		"oauth_app.client_id":     "The GitHub OAuth App Client ID.",
+		"oauth_app.client_secret": "The GitHub OAuth App Client Secret.",
 		"write_delay_ms": "Amount of time in milliseconds to sleep in between writes to GitHub API. " +
 			"Defaults to 1000ms or 1s if not set.",
 	}
@@ -240,6 +270,31 @@ func providerConfigure(p *schema.Provider) schema.ConfigureFunc {
 			}
 
 			token = appToken
+		}
+
+		if oauthApp, ok := d.Get("oauth_app").([]interface{}); ok && len(oauthApp) > 0 && oauthApp[0] != nil {
+			oauthAppAttr := oauthApp[0].(map[string]interface{})
+
+			var clientID, clientSecret string
+
+			if v, ok := oauthAppAttr["client_id"].(string); ok && v != "" {
+				clientID = v
+			} else {
+				return nil, fmt.Errorf("oauth_app.client_id must be set and contain a non-empty value")
+			}
+
+			if v, ok := oauthAppAttr["client_secret"].(string); ok && v != "" {
+				clientSecret = v
+			} else {
+				return nil, fmt.Errorf("oauth_app.client_secret must be set and contain a non-empty value")
+			}
+
+			oauthAppToken, err := GenerateOAuthAppToken(baseURL, clientID, clientSecret)
+			if err != nil {
+				return nil, err
+			}
+
+			token = oauthAppToken
 		}
 
 		writeDelay := d.Get("write_delay_ms").(int)
